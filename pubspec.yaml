@@ -37,6 +37,9 @@ dependencies:
   provider: ^6.1.5+1
   intl: ^0.20.2
   shared_preferences: ^2.5.5
+  supabase_flutter: ^2.8.0
+  flutter_dotenv: ^5.2.1
+  image_picker: ^1.1.2
 
 dev_dependencies:
   flutter_test:
@@ -59,6 +62,10 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  # File konfigurasi kredensial Supabase (URL + anon key).
+  assets:
+    - .env
 
   # To add assets to your application, add an assets section, like this:
   # assets:

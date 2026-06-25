@@ -1,114 +1,155 @@
-import 'dart:convert';
+import 'dart:async';
 
-import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/widgets.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../data/sample_data.dart';
 import '../models/cart_item.dart';
 import '../models/product.dart';
+import 'products_provider.dart';
 
-/// Mengelola isi keranjang belanja. Item disimpan dalam map dengan
-/// kunci id produk agar penambahan/pengurangan jumlah efisien.
+/// Mengelola isi keranjang belanja pengguna yang sedang login.
 ///
-/// Isi keranjang dipertahankan antar sesi (persisten) lewat
-/// [SharedPreferences]: yang disimpan hanya id produk + jumlahnya, lalu saat
-/// aplikasi dibuka kembali objek produknya direkonstruksi dari [productById].
+/// Yang disimpan (baik lokal maupun di tabel `cart_items` Supabase) hanya
+/// id produk + jumlah. Objek produknya di-resolve secara *lazy* dari
+/// [ProductsProvider] saat dibutuhkan, sehingga urutan pemuatan katalog vs
+/// keranjang tidak jadi masalah. Keranjang tersinkron antar perangkat.
 class CartProvider extends ChangeNotifier {
-  static const _storageKey = 'cart_items';
+  final SupabaseClient _client = Supabase.instance.client;
+  ProductsProvider _products;
+  late final StreamSubscription<AuthState> _authSub;
 
-  final Map<String, CartItem> _items = {};
-  SharedPreferences? _prefs;
+  /// id produk -> jumlah.
+  final Map<String, int> _qty = {};
 
-  CartProvider() {
-    _load();
+  CartProvider(this._products) {
+    _authSub = _client.auth.onAuthStateChange.listen((state) {
+      if (state.session != null) {
+        load();
+      } else {
+        _qty.clear();
+        notifyListeners();
+      }
+    });
   }
 
-  List<CartItem> get items => _items.values.toList();
+  String? get _userId => _client.auth.currentUser?.id;
 
-  bool get isEmpty => _items.isEmpty;
+  /// Dipanggil oleh ChangeNotifierProxyProvider saat katalog produk berubah
+  /// (mis. baru selesai dimuat), agar tampilan keranjang ikut menyegarkan
+  /// resolusi produknya.
+  void updateProducts(ProductsProvider products) {
+    _products = products;
+    WidgetsBinding.instance.addPostFrameCallback((_) => notifyListeners());
+  }
 
-  /// Total jumlah barang (menjumlahkan kuantitas tiap item).
-  int get totalQuantity =>
-      _items.values.fold(0, (sum, item) => sum + item.quantity);
+  /// Item keranjang yang produknya berhasil di-resolve dari katalog.
+  List<CartItem> get items {
+    final result = <CartItem>[];
+    _qty.forEach((id, qty) {
+      final product = _products.byId(id);
+      if (product != null) {
+        result.add(CartItem(product: product, quantity: qty));
+      }
+    });
+    return result;
+  }
 
-  /// Total harga seluruh item di keranjang.
-  double get totalPrice =>
-      _items.values.fold(0.0, (sum, item) => sum + item.subtotal);
+  bool get isEmpty => _qty.isEmpty;
 
-  int quantityOf(String productId) => _items[productId]?.quantity ?? 0;
+  int get totalQuantity => _qty.values.fold(0, (sum, q) => sum + q);
+
+  double get totalPrice => items.fold(0.0, (sum, item) => sum + item.subtotal);
+
+  int quantityOf(String productId) => _qty[productId] ?? 0;
+
+  /// Memuat isi keranjang dari Supabase.
+  Future<void> load() async {
+    final uid = _userId;
+    if (uid == null) return;
+    try {
+      final rows = await _client
+          .from('cart_items')
+          .select('product_id, quantity')
+          .eq('user_id', uid);
+      _qty.clear();
+      for (final row in rows as List) {
+        final id = row['product_id'] as String;
+        final qty = (row['quantity'] as num).toInt();
+        if (qty > 0) _qty[id] = qty;
+      }
+      notifyListeners();
+    } catch (_) {
+      // Abaikan kegagalan muat; keranjang tetap kosong.
+    }
+  }
 
   void add(Product product, {int qty = 1}) {
-    final existing = _items[product.id];
-    if (existing != null) {
-      existing.quantity += qty;
-    } else {
-      _items[product.id] = CartItem(product: product, quantity: qty);
-    }
+    final newQty = (_qty[product.id] ?? 0) + qty;
+    _qty[product.id] = newQty;
     notifyListeners();
-    _save();
+    _upsert(product.id, newQty);
   }
 
   void increase(String productId) {
-    final item = _items[productId];
-    if (item == null) return;
-    item.quantity++;
+    final current = _qty[productId];
+    if (current == null) return;
+    final newQty = current + 1;
+    _qty[productId] = newQty;
     notifyListeners();
-    _save();
+    _upsert(productId, newQty);
   }
 
-  /// Kurangi kuantitas; bila mencapai 0 item dihapus dari keranjang.
   void decrease(String productId) {
-    final item = _items[productId];
-    if (item == null) return;
-    if (item.quantity > 1) {
-      item.quantity--;
+    final current = _qty[productId];
+    if (current == null) return;
+    if (current > 1) {
+      final newQty = current - 1;
+      _qty[productId] = newQty;
+      notifyListeners();
+      _upsert(productId, newQty);
     } else {
-      _items.remove(productId);
+      remove(productId);
     }
-    notifyListeners();
-    _save();
   }
 
   void remove(String productId) {
-    _items.remove(productId);
+    _qty.remove(productId);
     notifyListeners();
-    _save();
+    _deleteRow(productId);
   }
 
   void clear() {
-    _items.clear();
+    _qty.clear();
     notifyListeners();
-    _save();
-  }
-
-  /// Memuat isi keranjang dari penyimpanan saat provider dibuat.
-  Future<void> _load() async {
-    _prefs = await SharedPreferences.getInstance();
-    final raw = _prefs!.getString(_storageKey);
-    if (raw == null) return;
-
-    final decoded = jsonDecode(raw) as List<dynamic>;
-    for (final entry in decoded) {
-      final map = entry as Map<String, dynamic>;
-      final id = map['id'] as String;
-      final qty = map['qty'] as int;
-      final product = productById(id);
-      // Lewati id yang sudah tidak ada di katalog atau jumlah tidak valid.
-      if (product != null && qty > 0) {
-        _items[id] = CartItem(product: product, quantity: qty);
-      }
+    final uid = _userId;
+    if (uid != null) {
+      _client.from('cart_items').delete().eq('user_id', uid);
     }
-    notifyListeners();
   }
 
-  /// Menyimpan isi keranjang (id + jumlah) ke penyimpanan.
-  Future<void> _save() async {
-    final prefs = _prefs ??= await SharedPreferences.getInstance();
-    final encoded = jsonEncode(
-      _items.values
-          .map((item) => {'id': item.product.id, 'qty': item.quantity})
-          .toList(),
-    );
-    await prefs.setString(_storageKey, encoded);
+  Future<void> _upsert(String productId, int qty) async {
+    final uid = _userId;
+    if (uid == null) return;
+    await _client.from('cart_items').upsert({
+      'user_id': uid,
+      'product_id': productId,
+      'quantity': qty,
+    });
+  }
+
+  Future<void> _deleteRow(String productId) async {
+    final uid = _userId;
+    if (uid == null) return;
+    await _client
+        .from('cart_items')
+        .delete()
+        .eq('user_id', uid)
+        .eq('product_id', productId);
+  }
+
+  @override
+  void dispose() {
+    _authSub.cancel();
+    super.dispose();
   }
 }

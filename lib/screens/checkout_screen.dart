@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/bank_account.dart';
+import '../models/address.dart';
 import '../models/order.dart';
+import '../providers/address_provider.dart';
 import '../providers/cart_provider.dart';
 import '../providers/orders_provider.dart';
 import '../theme/app_theme.dart';
@@ -23,17 +26,22 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     'Express': 40000,
   };
 
-  static const String _address =
-      'Rumah • Fatah\n'
-      'Jl. Merdeka No. 123, Jakarta Selatan, DKI Jakarta, 12345';
-
   String _shipping = 'Reguler';
   String _payment = 'Transfer Bank';
+  bool _placing = false;
 
   double get _shippingCost => _shippingCosts[_shipping]!;
 
-  void _placeOrder(double total) {
+  /// Pembayaran transfer memerlukan konfirmasi manual: pesanan dimulai dengan
+  /// status "Menunggu Pembayaran" hingga user unggah bukti & admin verifikasi.
+  bool get _isManualTransfer => _payment == 'Transfer Bank';
+
+  String _formatAddress(Address a) =>
+      '${a.label} • ${a.recipient}\n${a.detail}';
+
+  Future<void> _placeOrder(double total, Address address) async {
     final cart = context.read<CartProvider>();
+    final orders = context.read<OrdersProvider>();
 
     // Bangun pesanan dari isi keranjang sebelum keranjang dikosongkan.
     final now = DateTime.now();
@@ -54,11 +62,26 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       shippingCost: _shippingCost,
       shippingMethod: _shipping,
       paymentMethod: _payment,
-      address: _address,
+      address: _formatAddress(address),
+      status: _isManualTransfer
+          ? OrderStatus.menungguPembayaran
+          : OrderStatus.diproses,
     );
 
-    context.read<OrdersProvider>().addOrder(order);
-    cart.clear();
+    setState(() => _placing = true);
+    try {
+      await orders.addOrder(order);
+      cart.clear();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _placing = false);
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text('Gagal membuat pesanan: $e')));
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _placing = false);
 
     showDialog<void>(
       context: context,
@@ -85,8 +108,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Terima kasih telah berbelanja. Pesananmu senilai '
-              '${formatRupiah(total)} sedang diproses.',
+              _isManualTransfer
+                  ? 'Pesananmu senilai ${formatRupiah(total)} dibuat. '
+                      'Silakan transfer lalu unggah bukti pembayaran di '
+                      'halaman pesanan agar diproses admin.'
+                  : 'Terima kasih telah berbelanja. Pesananmu senilai '
+                      '${formatRupiah(total)} sedang diproses.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.grey.shade600),
             ),
@@ -105,7 +132,9 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                       MaterialPageRoute(builder: (_) => const OrdersScreen()),
                     );
                   },
-                  child: const Text('Lihat Pesanan'),
+                  child: Text(
+                    _isManualTransfer ? 'Unggah Bukti TF' : 'Lihat Pesanan',
+                  ),
                 ),
               ),
               const SizedBox(height: 8),
@@ -129,6 +158,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   @override
   Widget build(BuildContext context) {
     final cart = context.watch<CartProvider>();
+    final address = context.watch<AddressProvider>().defaultAddress;
     final subtotal = cart.totalPrice;
     final total = subtotal + (cart.isEmpty ? 0 : _shippingCost);
 
@@ -137,23 +167,29 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
         children: [
-          const _SectionCard(
+          _SectionCard(
             title: 'Alamat Pengiriman',
             icon: Icons.location_on_outlined,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Rumah • Fatah',
-                  style: TextStyle(fontWeight: FontWeight.w700),
-                ),
-                SizedBox(height: 4),
-                Text(
-                  'Jl. Merdeka No. 123, Jakarta Selatan, DKI Jakarta, 12345',
-                  style: TextStyle(height: 1.4),
-                ),
-              ],
-            ),
+            child: address == null
+                ? Text(
+                    'Belum ada alamat. Tambahkan alamat di menu Profil '
+                    '> Alamat Tersimpan terlebih dahulu.',
+                    style: TextStyle(color: Colors.grey.shade600, height: 1.4),
+                  )
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${address.label} • ${address.recipient}',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        address.detail,
+                        style: const TextStyle(height: 1.4),
+                      ),
+                    ],
+                  ),
           ),
           const SizedBox(height: 12),
           _SectionCard(
@@ -205,6 +241,33 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               ],
             ),
           ),
+          if (_isManualTransfer) ...[
+            const SizedBox(height: 12),
+            _SectionCard(
+              title: 'Transfer ke Rekening',
+              icon: Icons.account_balance_outlined,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _BankRow(label: 'Bank', value: BankAccount.bank),
+                  const SizedBox(height: 6),
+                  _BankRow(label: 'No. Rekening', value: BankAccount.number),
+                  const SizedBox(height: 6),
+                  _BankRow(label: 'Atas Nama', value: BankAccount.holder),
+                  const SizedBox(height: 10),
+                  Text(
+                    'Setelah membayar, unggah bukti transfer di halaman pesanan. '
+                    'Admin akan memverifikasi sebelum pesanan diproses.',
+                    style: TextStyle(
+                      color: Colors.grey.shade600,
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           _SectionCard(
             title: 'Ringkasan Belanja',
@@ -249,8 +312,19 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         child: SafeArea(
           top: false,
           child: FilledButton(
-            onPressed: cart.isEmpty ? null : () => _placeOrder(total),
-            child: Text('Buat Pesanan • ${formatRupiah(total)}'),
+            onPressed: (cart.isEmpty || address == null || _placing)
+                ? null
+                : () => _placeOrder(total, address),
+            child: _placing
+                ? const SizedBox(
+                    height: 22,
+                    width: 22,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.5,
+                      color: Colors.white,
+                    ),
+                  )
+                : Text('Buat Pesanan • ${formatRupiah(total)}'),
           ),
         ),
       ),
@@ -385,6 +459,34 @@ class _SummaryRow extends StatelessWidget {
             color: emphasize ? AppTheme.seed : AppTheme.ink,
             fontWeight: emphasize ? FontWeight.w900 : FontWeight.w600,
             fontSize: emphasize ? 18 : 14,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _BankRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _BankRow({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+        ),
+        Text(
+          value,
+          style: const TextStyle(
+            fontWeight: FontWeight.w800,
+            color: AppTheme.ink,
+            fontSize: 14,
           ),
         ),
       ],

@@ -1,5 +1,6 @@
 /// Status sebuah pesanan beserta label tampilannya.
 enum OrderStatus {
+  menungguPembayaran('Menunggu Pembayaran'),
   diproses('Diproses'),
   dikirim('Dikirim'),
   selesai('Selesai'),
@@ -7,6 +8,25 @@ enum OrderStatus {
 
   final String label;
   const OrderStatus(this.label);
+
+  /// Nama kolom di database (snake_case), mis. `menunggu_pembayaran`.
+  String get dbValue => switch (this) {
+        OrderStatus.menungguPembayaran => 'menunggu_pembayaran',
+        OrderStatus.diproses => 'diproses',
+        OrderStatus.dikirim => 'dikirim',
+        OrderStatus.selesai => 'selesai',
+        OrderStatus.dibatalkan => 'dibatalkan',
+      };
+
+  /// Memetakan nilai kolom database ke enum.
+  static OrderStatus fromDb(String value) => switch (value) {
+        'menunggu_pembayaran' => OrderStatus.menungguPembayaran,
+        'diproses' => OrderStatus.diproses,
+        'dikirim' => OrderStatus.dikirim,
+        'selesai' => OrderStatus.selesai,
+        'dibatalkan' => OrderStatus.dibatalkan,
+        _ => OrderStatus.diproses,
+      };
 }
 
 /// Satu baris item di dalam pesanan.
@@ -58,6 +78,9 @@ class Order {
   final String address;
   final OrderStatus status;
 
+  /// URL gambar bukti transfer; `null` bila belum diunggah.
+  final String? paymentProofUrl;
+
   const Order({
     required this.id,
     required this.date,
@@ -67,7 +90,20 @@ class Order {
     required this.paymentMethod,
     required this.address,
     this.status = OrderStatus.diproses,
+    this.paymentProofUrl,
   });
+
+  Order copyWith({OrderStatus? status, String? paymentProofUrl}) => Order(
+        id: id,
+        date: date,
+        lines: lines,
+        shippingCost: shippingCost,
+        shippingMethod: shippingMethod,
+        paymentMethod: paymentMethod,
+        address: address,
+        status: status ?? this.status,
+        paymentProofUrl: paymentProofUrl ?? this.paymentProofUrl,
+      );
 
   /// Total harga barang sebelum ongkir.
   double get subtotal => lines.fold(0.0, (sum, l) => sum + l.subtotal);
@@ -86,7 +122,7 @@ class Order {
         'shippingMethod': shippingMethod,
         'paymentMethod': paymentMethod,
         'address': address,
-        'status': status.name,
+        'status': status.dbValue,
       };
 
   factory Order.fromJson(Map<String, dynamic> json) => Order(
@@ -99,6 +135,32 @@ class Order {
         shippingMethod: json['shippingMethod'] as String,
         paymentMethod: json['paymentMethod'] as String,
         address: json['address'] as String,
-        status: OrderStatus.values.byName(json['status'] as String),
+        status: OrderStatus.fromDb(json['status'] as String),
       );
+
+  /// Membangun [Order] dari baris tabel `orders` Supabase (kolom snake_case)
+  /// yang sudah meng-embed `order_items(*)`.
+  factory Order.fromSupabaseMap(Map<String, dynamic> map) {
+    final lines = (map['order_items'] as List? ?? [])
+        .map((e) => OrderLine(
+              productId: e['product_id'] as String,
+              name: e['name'] as String,
+              emoji: e['emoji'] as String,
+              price: (e['price'] as num).toDouble(),
+              quantity: (e['quantity'] as num).toInt(),
+            ))
+        .toList();
+
+    return Order(
+      id: map['id'] as String,
+      date: DateTime.parse(map['date'] as String),
+      lines: lines,
+      shippingCost: (map['shipping_cost'] as num).toDouble(),
+      shippingMethod: map['shipping_method'] as String,
+      paymentMethod: map['payment_method'] as String,
+      address: map['address'] as String,
+      status: OrderStatus.fromDb(map['status'] as String),
+      paymentProofUrl: map['payment_proof_url'] as String?,
+    );
+  }
 }

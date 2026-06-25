@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../providers/auth_provider.dart';
 import '../theme/app_theme.dart';
 import 'about_screen.dart';
 import 'address_screen.dart';
+import 'admin/admin_orders_screen.dart';
+import 'admin/admin_products_screen.dart';
 import 'help_center_screen.dart';
 import 'notifications_screen.dart';
 import 'orders_screen.dart';
@@ -34,11 +38,8 @@ class ProfileScreen extends StatelessWidget {
             ),
             onPressed: () {
               Navigator.of(dialogContext).pop();
-              ScaffoldMessenger.of(context)
-                ..hideCurrentSnackBar()
-                ..showSnackBar(
-                  const SnackBar(content: Text('Kamu telah keluar')),
-                );
+              // AuthGate otomatis kembali ke layar login setelah keluar.
+              context.read<AuthProvider>().signOut();
             },
             child: const Text('Keluar'),
           ),
@@ -49,6 +50,9 @@ class ProfileScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final auth = context.watch<AuthProvider>();
+    final displayName = auth.fullName.isNotEmpty ? auth.fullName : 'Pengguna';
+
     return Scaffold(
       appBar: AppBar(title: const Text('Profil')),
       body: ListView(
@@ -62,12 +66,12 @@ class ProfileScreen extends StatelessWidget {
             ),
             child: Row(
               children: [
-                const CircleAvatar(
+                CircleAvatar(
                   radius: 32,
                   backgroundColor: AppTheme.seed,
                   child: Text(
-                    'F',
-                    style: TextStyle(
+                    auth.initial,
+                    style: const TextStyle(
                       color: Colors.white,
                       fontSize: 28,
                       fontWeight: FontWeight.w800,
@@ -75,28 +79,74 @@ class ProfileScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 16),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Fatah',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w800,
-                        color: AppTheme.ink,
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              displayName,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w800,
+                                color: AppTheme.ink,
+                              ),
+                            ),
+                          ),
+                          if (auth.isAdmin) ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: AppTheme.seed.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: const Text(
+                                'Admin',
+                                style: TextStyle(
+                                  color: AppTheme.seed,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      'fatah@email.com',
-                      style: TextStyle(color: Colors.grey.shade600),
-                    ),
-                  ],
+                      const SizedBox(height: 2),
+                      Text(
+                        auth.email,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: Colors.grey.shade600),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
           ),
           const SizedBox(height: 16),
+          if (auth.isAdmin) ...[
+            _MenuGroup(
+              items: [
+                _MenuData(
+                  Icons.inventory_2_outlined,
+                  'Kelola Produk',
+                  () => _open(context, const AdminProductsScreen()),
+                ),
+                _MenuData(
+                  Icons.receipt_long_outlined,
+                  'Pesanan Masuk',
+                  () => _open(context, const AdminOrdersScreen()),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+          ],
           _MenuGroup(
             items: [
               _MenuData(

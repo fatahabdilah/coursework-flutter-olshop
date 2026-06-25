@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../data/sample_data.dart';
 import '../providers/favorites_provider.dart';
+import '../providers/products_provider.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/product_card.dart';
 
@@ -13,8 +13,9 @@ class FavoritesScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final favorites = context.watch<FavoritesProvider>();
+    final allProducts = context.watch<ProductsProvider>().products;
     final products =
-        kProducts.where((p) => favorites.isFavorite(p.id)).toList();
+        allProducts.where((p) => favorites.isFavorite(p.id)).toList();
 
     return Scaffold(
       appBar: AppBar(title: const Text('Favorit')),

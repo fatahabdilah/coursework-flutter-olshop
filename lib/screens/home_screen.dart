@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../data/categories.dart';
-import '../data/sample_data.dart';
 import '../models/product.dart';
+import '../providers/products_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/product_card.dart';
 
@@ -21,9 +22,9 @@ class _HomeScreenState extends State<HomeScreen> {
   String _query = '';
   String _selectedCategory = _allCategory;
 
-  List<Product> get _filteredProducts {
+  List<Product> _filter(List<Product> all) {
     final q = _query.trim().toLowerCase();
-    return kProducts.where((p) {
+    return all.where((p) {
       final matchesCategory =
           _selectedCategory == _allCategory || p.category == _selectedCategory;
       final matchesQuery = q.isEmpty ||
@@ -35,7 +36,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final products = _filteredProducts;
+    final products = _filter(context.watch<ProductsProvider>().products);
 
     return SafeArea(
       bottom: false,
